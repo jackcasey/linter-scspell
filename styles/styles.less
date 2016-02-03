@@ -1,0 +1,18 @@
+@import "ui-variables";
+atom-text-editor::shadow .linter-highlight, .linter-highlight {
+  &.spelling {
+    /* Style for Message Badges */
+    &.badge {
+      background-color: orange;
+      color: white;
+    }
+    /* Style for Gutter */
+    &.linter-gutter {
+      background-color: none;
+    }
+    /* Style for the text editor highlight */
+    .region {
+      border-bottom: 1px solid fadeout(orange, 50%);
+    }
+  }
+}

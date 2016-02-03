@@ -1,83 +1,99 @@
 {BufferedProcess, CompositeDisposable} = require 'atom'
+_ = require 'underscore'
 
 module.exports =
   config:
     executablePath:
       type: 'string'
-      title: 'Path to scspell command'
-      default: '/usr/local/bin/scspell'
-    overrideDictionary:
-      type: 'string'
-      title: 'Path to override dictionary'
+      title: 'Path to aspell command'
+      default: '/usr/local/bin/aspell'
+    ignoredWords:
+      type: 'string',
+      title: 'Comma separated list of words to ignore'
       default: ''
+    dictionary:
+      type: 'string',
+      title: 'This dictionary will be used if possible'
+      default: 'en_GB'
 
   activate: ->
     @subscriptions = new CompositeDisposable
-    @subscriptions.add atom.config.observe 'linter-scspell.executablePath',
+    @subscriptions.add atom.config.observe 'linter-aspell.executablePath',
       (executablePath) =>
         @executablePath = executablePath
-    @subscriptions.add atom.config.observe 'linter-scspell.overrideDictionary',
-      (overrideDictionary) =>
-        @overrideDictionary = overrideDictionary
+    @subscriptions.add atom.config.observe 'linter-aspell.ignoredWords',
+      (ignoredWords) =>
+        @ignoredWords = _.map (ignoredWords || '').split(','), (word) ->
+          word.toLowerCase()
+    @subscriptions.add atom.config.observe 'linter-aspell.dictionary',
+      (dictionary) =>
+        @dictionary = dictionary
+
+    # atom.commands.add "atom-text-editor",
+    #   "linter-aspell-ignore -current-word": => @ignoreCurrentWord()
+
+  # @ignoreCurrentWord: () ->
+
 
   deactivate: ->
     @subscriptions.dispose()
 
   provideLinter: ->
     provider =
-      grammarScopes: ['*']
+      grammarScopes: ['text.*', 'source.gfm']
       scope: 'file'
-      lintOnFly: false
+      lintOnFly: true
 
       lint: (textEditor) =>
         filePath = textEditor.getPath()
-        parameters = [filePath, '--report-only']
+        shell = atom.config.get('run-command.shellCommand') || '/bin/bash'
+        aspell = @executablePath
+        ignore = @ignoredWords
+        dictionary = @dictionary
+        # fixword = (word) -> "echo #{word} | aspell pipe -d en_gb | grep '^&' | cut -d':' -f2 | cut -c2- | cut -d',' -f1"
+        checkCmd = "cat \"#{filePath}\" | #{aspell} -d #{dictionary} -a | grep -v '*' | cut -d' ' -f2 -f5- | grep -v '^$' | sort | uniq | sed 's/, /,/g' | sed 's/ /|/'"
 
-        if @overrideDictionary
-          parameters.push "--override-dictionary=#{ @overrideDictionary }"
-
-        regex = /.*:(\d+): (.*)\r?/
-
-        parse = (line) ->
-            parsed = regex.exec(line)
-
-            return null unless parsed?
-
-            line = parseInt(parsed[1], 10) - 1
-            message = parsed[2]
-
-            tokenStart = message.lastIndexOf('from token') + 12
-            token = message.slice(tokenStart, -2)
-
-            lineText = textEditor.lineTextForBufferRow line
-            start = lineText.indexOf(token)
-            end = start + token.length
-
-            type: 'SP',
-            text: message,
-            filePath: filePath,
-            range: [
-                [line, start],
-                [line, end]
-            ]
+        parse = (word, corrections, errors) ->
+          regex = new RegExp("\\b#{word}\\b", 'igm')
+          message = corrections.slice(0,6).join(', ')
+          textEditor.scan regex, (result) ->
+            error =
+              type: 'spelling',
+              text: message,
+              filePath: filePath,
+              range: result.range
+            errors.push error
 
         return new Promise (resolve, reject) =>
-          lines = []
+          badWords = []
           process = new BufferedProcess
-            command: @executablePath
-            args: parameters
+            command: shell
+            args: ["-c", checkCmd]
 
             stdout: (data) ->
-              lines = data.split '\n'
+              badWords = badWords.concat(data.split '\n')
 
-            exit: (code) ->
+            exit: (code) =>
               return resolve [] unless code is 0
 
               errors = []
-              for line in lines
-                  if line
-                    info = parse line
-                    errors.push info if info?
+              for badWord in badWords
+                bits = badWord.split('|')
+                continue unless bits.length > 0
+                word = bits[0]
+                corrections = bits[1]
+                continue unless word? && word != '' && corrections?
+                if @ignoredWords? && @ignoredWords.length > 0
+                  if word.toLowerCase() in @ignoredWords
+                    continue
+                corrections = corrections.split(',')
+
+                info = parse word, corrections, errors
+
+              errors = _.uniq errors, (error) ->
+                "#{error.range.start.row} #{error.range.start.column}"
+              errors = _.sortBy errors, (error) ->
+                error.range.start.row * 1000 + error.range.start.column
 
               return resolve errors
 
